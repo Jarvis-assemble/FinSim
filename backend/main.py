@@ -34,6 +34,14 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 _gemini_client = None
 
+GEMINI_MODELS = [
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3.8-flash",
+]
+
 try:
     from google import genai  # type: ignore
 
@@ -50,25 +58,38 @@ try:
                 break
     if _api_key:
         _gemini_client = genai.Client(api_key=_api_key)
-        print("Gemini client initialized successfully with model gemini-3.8-flash.")
+        print("Gemini client initialized successfully with model failover support.")
 except Exception as e:
     print(f"Failed to initialize Gemini client: {e}")
     _gemini_client = None
 
 
 def _gemini_generate(prompt: str, fallback: str) -> str:
-    """Call Gemini and return the text, or `fallback` on any error."""
+    """Call Gemini across candidate models with automatic quota failover, or return fallback."""
     if _gemini_client is None:
         return fallback
-    try:
-        response = _gemini_client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=prompt,
-        )
-        return response.text.strip()
-    except Exception as e:
-        print(f"Gemini generation error: {e}")
-        return fallback
+
+    last_error = None
+    for model_name in GEMINI_MODELS:
+        try:
+            response = _gemini_client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
+            if response and response.text:
+                return response.text.strip()
+        except Exception as e:
+            last_error = e
+            err_str = str(e)
+            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "404" in err_str:
+                print(f"Gemini {model_name} rate limit or 404, failing over: {e}")
+                continue
+            else:
+                print(f"Gemini generation error with {model_name}: {e}")
+                continue
+
+    print(f"All Gemini models exhausted. Returning fallback. Last error: {last_error}")
+    return fallback
 
 
 # ---------------------------------------------------------------------------
